@@ -30,6 +30,7 @@ byte tStatus, currentDay = 0, currentSecond = 100;
 
 void introAndBattery();
 byte chargingState();
+void chargingMode();
 
 void setup() {
   // put your setup code here, to run once:
@@ -50,11 +51,6 @@ void setup() {
   lcd.clear();
   batteryLevel = analogRead(BATTERY_LEVEL_PIN);
   introAndBattery();
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(batteryLevel);
-  lcd.print(" ");
-  lcd.print((int)chargingState());
 }
 
 void introAndBattery(){ 
@@ -96,7 +92,16 @@ byte chargingState(){
   else return 1;
 }
 
+void chargingMode(){
+  //TODO: show the charging data and an animation
+}
+
 void loop() {
   // put your main code here, to run repeatedly:
+  if(chargingState!=0){
+    chargingMode();
+  } else{
+    //TODO: normal mode
+  }
 
 }
