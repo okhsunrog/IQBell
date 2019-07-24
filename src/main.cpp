@@ -29,7 +29,7 @@ boolean noSleep, sleepMode, wakeLock, sleeping = false, secondTimetable, isAutho
 byte tStatus, currentDay = 0, currentSecond = 100;
 
 void introAndBattery();
-byte chargingState();
+boolean isCharging();
 void chargingMode();
 
 void setup() {
@@ -83,13 +83,8 @@ void introAndBattery(){
     }
 }
 
-byte chargingState(){
-  /*0 - not charging 
-  1 - charging
-  2 - charged*/
-  if((analogRead(STATE_CHARGING_PIN) < 300) && (analogRead(STATE_CHARGED_PIN) < 300)) return 0;
-  else if((analogRead(STATE_CHARGING_PIN) > 800) && (analogRead(STATE_CHARGED_PIN) < 800)) return 2;
-  else return 1;
+boolean isCharging(){ //true if charging or charged
+  return ((analogRead(STATE_CHARGING_PIN) < 300) && (analogRead(STATE_CHARGED_PIN) < 300));
 }
 
 void chargingMode(){
@@ -98,7 +93,7 @@ void chargingMode(){
 
 void loop() {
   // put your main code here, to run repeatedly:
-  if(chargingState!=0){
+  if(isCharging()){
     chargingMode();
   } else{
     //TODO: normal mode
