@@ -17,23 +17,31 @@
 #define STATE_CHARGING_PIN A6
 #define STATE_CHARGED_PIN A7
 
-byte loading, sx =  100, ttable[16];
 hd44780_I2Cexp lcd;
 float batteryLevel = 0;
-int checksum = 0, charging, charged, nowSec;
-byte buttonSecond;
-boolean buttonIsPressed = false, btIsEnabled = false;
-boolean thereIsBell, nextBellIsSoon;
-byte minutesTillNextBell, nextBellNum, secondsTillNextBell, i; //"i" is an iterator in "for"
-boolean noSleep, sleepMode, wakeLock, sleeping = false, secondTimetable, isAuthorized;
-byte tStatus, currentDay = 0, currentSecond = 100;
+boolean sleepMode, sleepModeEntering, sleepModeExit = false, secondTimetable, wakeLock = false;
+byte batteryPercentage, wakeSeconds;
+byte currentBatteryIcon = 255, currentDay = 255;
+byte secondPrev = 255, i, ttable[16]; //"i" is an iterator in "for"
 
+void loading(byte i);
 void introAndBattery();
 boolean isCharging();
 void chargingMode();
+void printBattery(byte level);
+void checkBattery();
+void updateDisplay();
+void checkSleepMode();
+void sleep();
+void sleepIntro();
+void sleepOut();
+void onceInSecond();
+void setTimetable(boolean isSecond);
+boolean isInside(byte startDay, byte startMonth, byte endDay, byte endMonth);
 
 void setup() {
   // put your setup code here, to run once:
+  analogReference(INTERNAL);
   setSyncProvider(RTC.get);   // the function to get the time from the RTC
   setSyncInterval(15); //request to RTC every 15 seconds
   pinMode(RELAY_PIN, OUTPUT);
@@ -66,15 +74,7 @@ void introAndBattery(){
     for(i =  0; i < 50; i++){
       batteryLevel -= FACTOR * (batteryLevel - analogRead(BATTERY_LEVEL_PIN));
       lcd.setCursor(11, 3);
-      switch ((i/4)%3)
-      {
-      case 0: lcd.print(".   ");
-        break;
-      case 1: lcd.print(" .  ");
-        break;
-      default: lcd.print("  . ");
-        break;
-      }
+      loading(i/4);
       if(i%2 == 0){
         lcd.print(i*2);
         lcd.print("%");
@@ -83,12 +83,55 @@ void introAndBattery(){
     }
 }
 
+void loading(byte i){
+  switch (i%3){
+      case 0: lcd.print(".   ");
+        break;
+      case 1: lcd.print(" .  ");
+        break;
+      default: lcd.print("  . ");
+        break;
+      }
+}
+
 boolean isCharging(){ //true if charging or charged
-  return ((analogRead(STATE_CHARGING_PIN) < 300) && (analogRead(STATE_CHARGED_PIN) < 300));
+  return !((analogRead(STATE_CHARGING_PIN) < 50) && (analogRead(STATE_CHARGED_PIN) < 50));
 }
 
 void chargingMode(){
   //TODO: show the charging data and an animation
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  if(analogRead(STATE_CHARGED_PIN) < 500){
+    lcd.print("Charged!   100% ");
+    printBattery(6);
+    delay(1000);
+  } else{
+    lcd.print("Charging");
+    batteryLevel -= FACTOR * (batteryLevel - analogRead(BATTERY_LEVEL_PIN));
+    batteryPercentage = batteryLevel - 252;
+    lcd.setCursor(11, 0);
+    lcd.print(batteryPercentage);
+    for(i=0; i < 3; i++){
+      lcd.setCursor(8, 0);
+      loading(i);
+      delay(1000);
+    }
+  }
+}
+
+void printBattery(byte level) {
+  if (level != currentBatteryIcon) { //if battery icon changed then redraw the icon
+    byte bitmap[8];
+    bitmap[0] = B01110;
+    for (byte i = 1; i < 7; i++) bitmap[i] = B10001;
+    bitmap[7] = B11111;
+    for (byte i = 6; i > 6 - level; i--) bitmap[i] = B11111;
+    lcd.createChar(0, bitmap);
+    currentBatteryIcon = level;
+  }
+  lcd.setCursor(19, 0);
+  lcd.write(byte(0));
 }
 
 void loop() {
@@ -96,7 +139,147 @@ void loop() {
   if(isCharging()){
     chargingMode();
   } else{
-    //TODO: normal mode
+    checkSleepMode();
+    if(sleepMode && !wakeLock){
+      if(sleepModeEntering){
+        sleepIntro();
+        sleepModeEntering = false;
+      }
+      sleep();
+    } else {
+      onceInSecond();
+    }
+  }
+}
+
+void checkBattery(){
+
+}
+
+void updateDisplay(){
+
+}
+
+void sleepIntro(){
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Entering sleep mode");
+  lcd.setCursor(0, 3);
+  lcd.print("Loading");
+  for(i =  0; i < 25; i++){
+      lcd.setCursor(11, 3);
+      loading(i/2);
+      lcd.print(i*4);
+      lcd.print("%");
+      delay(200);
+    }
+  lcd.clear();
+  lcd.noDisplay();
+  lcd.noBacklight();
+  analogWrite(LCD_BRIGHTNESS_PIN, 0);
+  Serial.end();
+  digitalWrite(BLUETOOTH_POWER_PIN, LOW);
+  digitalWrite(RELAY_PIN, LOW);
+}
+
+void sleepOut(){
+  lcd.display();
+  lcd.backlight();
+  analogWrite(LCD_BRIGHTNESS_PIN, 255);
+  Serial.begin(9600);
+}
+
+void sleep(){
+  sleepModeExit = true;
+  for(i=0; i<30; i++){
+    LowPower.idle(SLEEP_8S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_OFF, TWI_OFF);
+    if(digitalRead(BUTTON_PIN) == false) {
+      wakeLock = true;
+      wakeSeconds = 30;
+      sleepOut();
+      break;
+    }
+  }
+}
+
+void checkSleepMode(){
+  if (currentDay != day()) {
+    sleepMode = false;
+    if (weekday() == 1 || weekday() == 7) {
+      sleepMode = true;
+      sleepModeEntering = true;
+    }
+    else {
+      for (i = 0; i < 8; i++) {
+        byte startExceptionMonth = EEPROM.read(32 + i * 4);
+        byte startExceptionDay = EEPROM.read(33 + i * 4);
+        byte endExceptionMonth = EEPROM.read(34 + i * 4);
+        byte endExceptionDay = EEPROM.read(35 + i * 4);
+        if(startExceptionDay > 31 || endExceptionDay > 31 || 
+        startExceptionMonth > 12 || endExceptionMonth > 12 || startExceptionDay == 0 || 
+        startExceptionMonth == 0 || endExceptionDay == 0 || endExceptionMonth == 0) continue;
+        if (isInside(startExceptionDay, startExceptionMonth, endExceptionDay, endExceptionMonth)){
+          sleepMode = true;
+          sleepModeEntering = true;
+          break;
+        }
+      }
+      secondTimetable = false;
+      if(!sleepMode){
+        for (i = 0; i < 8; i++) {
+          byte exceptionMonth = EEPROM.read(64 + i * 2);
+          byte exceptionDay = EEPROM.read(65 + i * 2);
+          boolean shDay;
+          shDay = (exceptionMonth > 127);
+          exceptionMonth &= B01111111;
+          if (exceptionMonth == month() && exceptionDay == day()) {
+            if (shDay == false){
+               sleepMode = true;
+               sleepModeEntering = true;
+            } else secondTimetable = true;
+          }
+        }
+      }
+    }
+    setTimetable(secondTimetable);
+    currentDay = day();
+  }
+}
+
+boolean isInside(byte startDay, byte startMonth, byte endDay, byte endMonth) {
+  int today = (month() - 1) * 31 + (day() - 1);
+  int startDate = (startMonth - 1) * 31 + (startDay - 1);
+  int endDate = (endMonth - 1) * 31 + (endDay - 1);
+  if (startDate > endDate) {
+    if (today < 186) {
+      if (today < startDate) return true;
+      else return false;
+    }
+    else {
+      if (today > endDate) return true;
+      else return false;
+    }
+  }
+  else {
+    if (today > startDate && today < endDate) return true;
+    else return false;
+  }
+}
+
+void onceInSecond(){
+  if(second()!=secondPrev){
+    wakeSeconds--;
+    if(wakeSeconds == 0){
+      wakeLock = false;
+      sleepIntro();
+      return;
+    }
+    secondPrev = second();
   }
 
+}
+
+void setTimetable(boolean isSecond) {
+  for (i = 0; i < 16; i++)
+    ttable[i] = EEPROM.read(isSecond ? i + 16 : i);
 }
