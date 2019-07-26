@@ -19,8 +19,8 @@
 
 hd44780_I2Cexp lcd;
 float batteryLevel = 0;
-boolean sleepMode = false, sleepModeEntering = false, sleepModeExit = false, secondTimetable, wakeLock = false;
-byte batteryPercentage, wakeSeconds;
+boolean sleepMode = false, sleepModeEntering = false, sleepModeExit = false, secondTimetable, wakeLock = true;
+byte batteryPercentage, wakeSeconds = 30;
 boolean buttonIsPressed = false;
 boolean bluetoothSwitch = false, bluetoothState = false;
 byte currentBatteryIcon = 255, currentDay = 255, pressedTime, bluetoothOnTime;
@@ -33,7 +33,9 @@ boolean isCharging();
 void chargingMode();
 void printBattery(byte level);
 void checkBattery();
+void printWeekDay();
 void updateDisplay();
+void printTemperature();
 void checkSleepMode();
 void sleep();
 void sleepIntro();
@@ -84,7 +86,7 @@ void setup() {
 void introAndBattery(){ 
   //showing boot animation and checking battery level and state
     lcd.setCursor(0, 0);
-    lcd.print("IQBell       v 0.2.0");
+    lcd.print("IQBell       v 0.2.4");
     lcd.setCursor(1, 1);
     lcd.print("by Danila Gornushko");
     lcd.setCursor(0, 2);
@@ -124,6 +126,7 @@ boolean isCharging(){ //true if charging or charged
 void chargingMode(){
   lcd.clear();
   printBluetoothState();
+  printTemperature();
   lcd.setCursor(0, 0);
   if(analogRead(STATE_CHARGED_PIN) < 500){
     lcd.print("Charged!      100% ");
@@ -197,15 +200,18 @@ void updateDisplay(){
   lcd.print(month());
   lcd.write('/');
   lcd.print(year());
-  lcd.setCursor(11, 0);
+  lcd.setCursor(0, 2);
+  printWeekDay();
+  lcd.setCursor(14, 0);
   printProc(batteryPercentage);
   printBattery(batteryPercentage/15);
   printBluetoothState();
   if(wakeLock){
-    lcd.setCursor(15, 3);
+    lcd.setCursor(15, 2);
     lcd.print("W: ");
     lcd.print(wakeSeconds);
   }
+  printTemperature();
 }
 
 void sleepIntro(){
@@ -227,6 +233,8 @@ void sleepIntro(){
 }
 
 void sleepOut(){
+  setSyncProvider(RTC.get);   // we need to sync time after sleep mode
+  setSyncInterval(15);
   lcd.display();
   lcd.backlight();
   analogWrite(LCD_BRIGHTNESS_PIN, 255);
@@ -236,6 +244,7 @@ void sleepOut(){
   lcd.print("Exiting sleep mode");
   loadingAndMeasuring();
 }
+
 void sleep(){
   delay(100);
   sleepModeExit = true;
@@ -256,7 +265,6 @@ void checkSleepMode(){
     if (weekday() == 1 || weekday() == 7) {
       sleepMode = true;
       sleepModeEntering = true;
-      Serial.println("Weekend");
     }
     else {
       for (i = 0; i < 8; i++) {
@@ -270,7 +278,6 @@ void checkSleepMode(){
         if (isInside(startExceptionDay, startExceptionMonth, endExceptionDay, endExceptionMonth)){
           sleepMode = true;
           sleepModeEntering = true;
-          Serial.println("Long");
           break;
         }
       }
@@ -286,7 +293,6 @@ void checkSleepMode(){
             if (shDay == false){
                sleepMode = true;
                sleepModeEntering = true;
-               Serial.println("Short");
             } else secondTimetable = true;
           }
         }
@@ -381,7 +387,6 @@ void checkButton(){
 
 void printBluetoothState(){
   if(bluetoothState){
-    Serial.println("Print BT char");
     lcd.setCursor(19, 1);
     lcd.write(byte(1));
     lcd.setCursor(16, 1);
@@ -405,5 +410,32 @@ void bluetoothPowerControl(){
       bluetoothState = false;
       digitalWrite(BLUETOOTH_POWER_PIN, LOW);
     } else bluetoothOnTime--;
+  }
+}
+
+void printTemperature(){
+  lcd.setCursor(16, 3);
+  lcd.print(RTC.temperature() / 4);
+  lcd.write(byte(0xDF));
+  lcd.print("C");
+}
+
+void printWeekDay(){
+  switch (weekday())
+  {
+    case 1: lcd.print("Sunday");
+      break;
+    case 2: lcd.print("Monday");
+      break;
+    case 3: lcd.print("Tuesday");
+      break;
+    case 4: lcd.print("Wednesday");
+      break;
+    case 5: lcd.print("Thursday");
+      break;
+    case 6: lcd.print("Friday");
+      break;
+    case 7: lcd.print("Saturday");
+      break;
   }
 }
