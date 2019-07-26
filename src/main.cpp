@@ -5,6 +5,7 @@
 #include <LowPower.h> //energy saving library
 #include <DS3232RTC.h>
 #include <EEPROM.h>
+#include <CRC32.h>
 
 #define LCD_COLS 20
 #define LCD_ROWS 4
@@ -17,12 +18,20 @@
 #define STATE_CHARGING_PIN A6
 #define STATE_CHARGED_PIN A7
 
+
+typedef union {
+  uint32_t lValue;
+  byte bValue[sizeof(lValue)];
+} ULongByBytes; //is using for sending and receiving unsigned long via Serial
+
+ULongByBytes checksum;
 hd44780_I2Cexp lcd;
+CRC32 crc;
 float batteryLevel = 0;
 boolean sleepMode = false, sleepModeEntering = false, sleepModeExit = false, secondTimetable, wakeLock = true;
 byte batteryPercentage, wakeSeconds = 30;
-boolean buttonIsPressed = false;
-boolean bluetoothSwitch = false, bluetoothState = false;
+boolean buttonIsPressed = false, isAuthorized;
+boolean bluetoothSwitch = false, bluetoothIsOn = false;
 byte currentBatteryIcon = 255, currentDay = 255, pressedTime, bluetoothOnTime;
 byte secondPrev = 255, i, ttable[16]; //"i" is an iterator in "for"
 
@@ -38,6 +47,8 @@ void printWeekDay();
 void updateDisplay();
 void printTemperature();
 void checkSleepMode();
+void clearInput();
+void getData();
 void sleep();
 void sleepIntro();
 void sleepOut();
@@ -51,6 +62,18 @@ byte validateWithDefault(byte vl, byte mn, byte mx, byte df);
 byte validate(byte vl, byte mn, byte mx);
 void setTimetable(boolean isSecond);
 boolean isInside(byte startDay, byte startMonth, byte endDay, byte endMonth);
+byte timeIsSet();
+void waitForInput();
+void sendByte(byte data);
+byte getByte(byte numOfBytes = 1);
+void sendChecksum();
+boolean Checksum();
+void getData();
+void sendingInfo();
+void changingPass();
+void settingLongException();
+void settingShortException();
+void settingTime();
 
 void setup() {
   // put your setup code here, to run once:
@@ -181,6 +204,7 @@ void loop() {
       onceInSecond();
     }
   }
+  if(bluetoothIsOn) checkBluetooth();
 }
 
 void checkBattery(){
@@ -226,7 +250,7 @@ void sleepIntro(){
   lcd.noDisplay();
   lcd.noBacklight();
   buttonIsPressed = false;
-  bluetoothState = false;
+  bluetoothIsOn = false;
   bluetoothSwitch = false;
   analogWrite(LCD_BRIGHTNESS_PIN, 0);
   Serial.end();
@@ -328,7 +352,7 @@ boolean isInside(byte startDay, byte startMonth, byte endDay, byte endMonth) {
 void onceInSecond(){
   if(second()!=secondPrev){
     if(wakeLock){
-      if(bluetoothState) wakeSeconds = bluetoothOnTime + 30;
+      if(bluetoothIsOn) wakeSeconds = bluetoothOnTime + 30;
       else wakeSeconds--;
       if(wakeSeconds == 0){
         wakeLock = false;
@@ -373,7 +397,7 @@ void checkButton(){
   if(!digitalRead(BUTTON_PIN) && !buttonIsPressed){
     buttonIsPressed = true;
     pressedTime = 0;
-    if(bluetoothState) bluetoothOnTime = 60;
+    if(bluetoothIsOn) bluetoothOnTime = 60;
     else wakeSeconds = 30;
   }
   if(!digitalRead(BUTTON_PIN) && buttonIsPressed){
@@ -388,7 +412,7 @@ void checkButton(){
 }
 
 void printBluetoothState(){
-  if(bluetoothState){
+  if(bluetoothIsOn){
     lcd.setCursor(19, 1);
     lcd.write(byte(1));
     lcd.setCursor(16, 1);
@@ -397,19 +421,19 @@ void printBluetoothState(){
 }
 
 void bluetoothPowerControl(){
-  if(bluetoothSwitch && !bluetoothState){
+  if(bluetoothSwitch && !bluetoothIsOn){
     digitalWrite(BLUETOOTH_POWER_PIN, HIGH);
     bluetoothOnTime = 30;
     bluetoothSwitch = false;
-    bluetoothState = true;
+    bluetoothIsOn = true;
   }
-  else if(bluetoothSwitch && bluetoothState){
+  else if(bluetoothSwitch && bluetoothIsOn){
     bluetoothOnTime = 60;
     bluetoothSwitch = false;
   }
-  else if(!bluetoothSwitch && bluetoothState){
+  else if(!bluetoothSwitch && bluetoothIsOn){
     if(bluetoothOnTime == 0){
-      bluetoothState = false;
+      bluetoothIsOn = false;
       digitalWrite(BLUETOOTH_POWER_PIN, LOW);
     } else bluetoothOnTime--;
   }
@@ -443,5 +467,131 @@ void printWeekDay(){
 }
 
 void checkBluetooth(){
+  if(Serial.available()){
+    delay(50);
+    if(Serial.available()>15){
+      isAuthorized = true;
+      for (i = 0; i < 16; i++) if (Serial.read() != EEPROM.read(80 + i)) isAuthorized = false;
+      if (isAuthorized) {
+        clearInput();
+        Serial.print("Ready");
+        delay(300);
+        if (Serial.available() > 0)  getData();
+      }
+    }
+  }
+}
 
+void clearInput(){
+  while(Serial.available()) Serial.read();
+}
+
+byte timeIsSet(){
+  return timeIsSet() == timeSet ? 1 : 0;
+}
+
+void waitForInput(){
+  while (Serial.available() == 0);
+  delay(20);
+}
+
+void sendByte(byte data){
+  Serial.write(data);
+  crc.update(data);
+}
+
+byte getByte(byte numOfBytes = 1){
+  byte data;
+  while (numOfBytes) {
+    data = Serial.read();
+    crc.update(data);
+    numOfBytes--;
+  }
+  return data;
+}
+
+void sendChecksum(){
+  checksum.lValue = crc.finalize();
+  Serial.write(checksum.bValue, 4);
+}
+
+boolean Checksum(){
+  for(i=0; i<4; i++) checksum.bValue[i] = Serial.read();
+  return (crc.finalize() == checksum.lValue);
+}
+
+void getData(){
+  crc.reset();
+  byte command = getByte();
+  switch (command) {
+    case 0: sendingInfo();
+      break;
+    case 1: changingPass();
+      break;
+    case 2: settingLongException();
+      break;
+    case 3: settingShortException();
+      break;
+    case 4: settingTime();
+      break;
+  }
+}
+
+void sendingInfo(){
+  getByte(4); //ignoring 4 bytes. However, they are added to the checksum
+  if (Checksum()) {
+    crc.reset();
+    ULongByBytes toSend;
+    toSend.lValue = now();
+    for (i = 0; i < 4; i++) toSend.bValue[i]; //sending current time in unix format as 4 bytes
+    sendByte(timeIsSet());
+    for (i = 0; i < 80; i++) sendByte(EEPROM.read(i)); //sending timetables' and exceptions' data
+    sendChecksum();
+  }
+  else Serial.print("Failed");
+}
+
+void changingPass(){
+  boolean flag = true;
+  byte temp_pass[16];
+  for (i = 0; i < 16; i++) if (getByte() != EEPROM.read(80 + i)) flag = false;
+  if (flag) for (i = 0; i < 16; i++) temp_pass[i] = getByte();
+  if (Checksum() && flag) {
+    for (i = 0; i < 16; i++) EEPROM.write(80 + i, temp_pass[i]);
+    Serial.print("OK");
+  }
+  else Serial.print("Failed");
+}
+
+void settingLongException(){
+  byte tempArr[4];
+  byte numOfException = getByte();
+  for (i = 0; i < 4; i++) tempArr[i] = getByte();
+  if (Checksum()) {
+    for (i = 0; i < 4; i++) EEPROM.write(32 + i + numOfException * 4, tempArr[i]);
+    Serial.print("OK");
+  }
+  else Serial.print("Failed");
+}
+
+void settingShortException(){
+  byte tempArr[4];
+  byte numOfExceptions = getByte();
+  for (i = 0; i < 2; i++) tempArr[i] = getByte();
+  if (Checksum()) {
+    for (i = 0; i < 2; i++) EEPROM.write(64 + i + numOfExceptions * 2, tempArr[i]);
+    Serial.print("OK");
+  }
+  else Serial.print("Failed");
+}
+
+void settingTime(){
+  ULongByBytes val;
+  for (i = 0; i < 4; i++) val.bValue[i] = getByte(); //receiving 4 bytes
+  if (Checksum()) {
+    RTC.set(val.lValue);   // set the RTC and the system time to the received value
+    setTime(val.lValue);  // unix-format time is used here as well
+    Serial.print("OK");
+  }
+  else Serial.print("Failed");
 }
