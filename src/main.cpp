@@ -33,6 +33,7 @@ boolean isCharging();
 void chargingMode();
 void printBattery(byte level);
 void checkBattery();
+void checkBluetooth();
 void printWeekDay();
 void updateDisplay();
 void printTemperature();
@@ -168,6 +169,7 @@ void loop() {
     chargingMode();
   } else{
     checkSleepMode();
+    if(!sleepMode) wakeLock = false;
     if(sleepMode && !wakeLock){
       if(sleepModeEntering){
         sleepIntro();
@@ -286,11 +288,11 @@ void checkSleepMode(){
         for (i = 0; i < 8; i++) {
           byte exceptionMonth = EEPROM.read(64 + i * 2);
           byte exceptionDay = EEPROM.read(65 + i * 2);
-          boolean shDay;
-          shDay = (exceptionMonth > 127);
+          boolean shortDay;
+          shortDay = (exceptionMonth > 127);
           exceptionMonth &= B01111111;
           if (exceptionMonth == month() && exceptionDay == day()) {
-            if (shDay == false){
+            if (shortDay == false){
                sleepMode = true;
                sleepModeEntering = true;
             } else secondTimetable = true;
@@ -326,7 +328,8 @@ boolean isInside(byte startDay, byte startMonth, byte endDay, byte endMonth) {
 void onceInSecond(){
   if(second()!=secondPrev){
     if(wakeLock){
-      wakeSeconds--;
+      if(bluetoothState) wakeSeconds = bluetoothOnTime + 30;
+      else wakeSeconds--;
       if(wakeSeconds == 0){
         wakeLock = false;
         sleepIntro();
@@ -345,8 +348,6 @@ void setTimetable(boolean isSecond) {
     ttable[i] = EEPROM.read(isSecond ? i + 16 : i);
 }
 
-
-// Ensures that given number is inside [min;max] range
 byte validateWithDefault(byte vl, byte mn, byte mx, byte df) {
   if (vl < mn || vl > mx) return df;
   return vl;
@@ -372,7 +373,8 @@ void checkButton(){
   if(!digitalRead(BUTTON_PIN) && !buttonIsPressed){
     buttonIsPressed = true;
     pressedTime = 0;
-    wakeSeconds = 30;
+    if(bluetoothState) bluetoothOnTime = 60;
+    else wakeSeconds = 30;
   }
   if(!digitalRead(BUTTON_PIN) && buttonIsPressed){
     pressedTime++;
@@ -402,7 +404,7 @@ void bluetoothPowerControl(){
     bluetoothState = true;
   }
   else if(bluetoothSwitch && bluetoothState){
-    bluetoothOnTime = 30;
+    bluetoothOnTime = 60;
     bluetoothSwitch = false;
   }
   else if(!bluetoothSwitch && bluetoothState){
@@ -438,4 +440,8 @@ void printWeekDay(){
     case 7: lcd.print("Saturday");
       break;
   }
+}
+
+void checkBluetooth(){
+
 }
