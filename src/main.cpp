@@ -19,12 +19,15 @@
 
 hd44780_I2Cexp lcd;
 float batteryLevel = 0;
-boolean sleepMode, sleepModeEntering, sleepModeExit = false, secondTimetable, wakeLock = false;
+boolean sleepMode = false, sleepModeEntering = false, sleepModeExit = false, secondTimetable, wakeLock = false;
 byte batteryPercentage, wakeSeconds;
-byte currentBatteryIcon = 255, currentDay = 255;
+boolean buttonIsPressed = false;
+boolean bluetoothSwitch = false, bluetoothState = false;
+byte currentBatteryIcon = 255, currentDay = 255, pressedTime, bluetoothOnTime;
 byte secondPrev = 255, i, ttable[16]; //"i" is an iterator in "for"
 
 void loading(byte i);
+void loadingAndMeasuring();
 void introAndBattery();
 boolean isCharging();
 void chargingMode();
@@ -36,6 +39,13 @@ void sleep();
 void sleepIntro();
 void sleepOut();
 void onceInSecond();
+void checkButton();
+void bluetoothPowerControl();
+void printBluetoothState();
+void printProc(byte x);
+void print2digits(byte number);
+byte validateWithDefault(byte vl, byte mn, byte mx, byte df);
+byte validate(byte vl, byte mn, byte mx);
 void setTimetable(boolean isSecond);
 boolean isInside(byte startDay, byte startMonth, byte endDay, byte endMonth);
 
@@ -57,6 +67,16 @@ void setup() {
   Serial.begin(9600); //starting Bluetooth transfer using speed: 9600 bond B/s (the minimal one)
   lcd.begin(LCD_COLS, LCD_ROWS);
   lcd.clear();
+  byte bluetoothCharmap[8] = {
+    B00010,
+    B10101,
+    B01101,
+    B00110,
+    B01101,
+    B10101,
+    B00010,
+    B0};
+  lcd.createChar(1, bluetoothCharmap);
   batteryLevel = analogRead(BATTERY_LEVEL_PIN);
   introAndBattery();
 }
@@ -64,21 +84,24 @@ void setup() {
 void introAndBattery(){ 
   //showing boot animation and checking battery level and state
     lcd.setCursor(0, 0);
-    lcd.print("IQBell       v 0.1.1");
+    lcd.print("IQBell       v 0.2.0");
     lcd.setCursor(1, 1);
     lcd.print("by Danila Gornushko");
     lcd.setCursor(0, 2);
     lcd.print("Email: dghak@bk.ru");
-    lcd.setCursor(3, 3);
-    lcd.print("Loading");
-    for(i =  0; i < 50; i++){
-      batteryLevel -= FACTOR * (batteryLevel - analogRead(BATTERY_LEVEL_PIN));
+    loadingAndMeasuring();
+}
+
+void loadingAndMeasuring(){
+  lcd.setCursor(3, 3);
+  lcd.print("Loading");
+  for(i =  0; i < 50; i++){
+      checkBattery();
       lcd.setCursor(11, 3);
-      loading(i/4);
       if(i%2 == 0){
-        lcd.print(i*2);
-        lcd.print("%");
-      }
+        loading(i/4);
+        printProc(i*2);
+      } 
       delay(100);
     }
 }
@@ -99,35 +122,37 @@ boolean isCharging(){ //true if charging or charged
 }
 
 void chargingMode(){
-  //TODO: show the charging data and an animation
   lcd.clear();
+  printBluetoothState();
   lcd.setCursor(0, 0);
   if(analogRead(STATE_CHARGED_PIN) < 500){
-    lcd.print("Charged!   100% ");
+    lcd.print("Charged!      100% ");
     printBattery(6);
     delay(1000);
   } else{
     lcd.print("Charging");
-    batteryLevel -= FACTOR * (batteryLevel - analogRead(BATTERY_LEVEL_PIN));
-    batteryPercentage = batteryLevel - 252;
-    lcd.setCursor(11, 0);
-    lcd.print(batteryPercentage);
+    checkBattery();
+    lcd.setCursor(15, 0);
+    printProc(batteryPercentage - 1);
+    printBattery(batteryPercentage/15 - 1);
     for(i=0; i < 3; i++){
       lcd.setCursor(8, 0);
       loading(i);
-      delay(1000);
+      delay(333);
     }
   }
+  checkButton();
+  bluetoothPowerControl();
 }
 
 void printBattery(byte level) {
   if (level != currentBatteryIcon) { //if battery icon changed then redraw the icon
-    byte bitmap[8];
-    bitmap[0] = B01110;
-    for (byte i = 1; i < 7; i++) bitmap[i] = B10001;
-    bitmap[7] = B11111;
-    for (byte i = 6; i > 6 - level; i--) bitmap[i] = B11111;
-    lcd.createChar(0, bitmap);
+    byte charmap[8];
+    charmap[0] = B01110;
+    for (byte i = 1; i < 7; i++) charmap[i] = B10001;
+    charmap[7] = B11111;
+    for (byte i = 6; i > 6 - level; i--) charmap[i] = B11111;
+    lcd.createChar(0, charmap);
     currentBatteryIcon = level;
   }
   lcd.setCursor(19, 0);
@@ -147,17 +172,40 @@ void loop() {
       }
       sleep();
     } else {
+      checkBattery();
       onceInSecond();
     }
   }
 }
 
 void checkBattery(){
-
+  batteryLevel-=FACTOR*(batteryLevel-analogRead(BATTERY_LEVEL_PIN));
+  batteryPercentage =  validate(batteryLevel - 252, 0, 100);
 }
 
 void updateDisplay(){
-
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  print2digits(hour());
+  lcd.write(':');
+  print2digits(minute());
+  lcd.write(':');
+  print2digits(second());
+  lcd.setCursor(0, 1);
+  lcd.print(day());
+  lcd.write('/');
+  lcd.print(month());
+  lcd.write('/');
+  lcd.print(year());
+  lcd.setCursor(11, 0);
+  printProc(batteryPercentage);
+  printBattery(batteryPercentage/15);
+  printBluetoothState();
+  if(wakeLock){
+    lcd.setCursor(15, 3);
+    lcd.print("W: ");
+    lcd.print(wakeSeconds);
+  }
 }
 
 void sleepIntro(){
@@ -165,17 +213,13 @@ void sleepIntro(){
   lcd.setCursor(0, 0);
   lcd.print("Entering sleep mode");
   lcd.setCursor(0, 3);
-  lcd.print("Loading");
-  for(i =  0; i < 25; i++){
-      lcd.setCursor(11, 3);
-      loading(i/2);
-      lcd.print(i*4);
-      lcd.print("%");
-      delay(200);
-    }
+  loadingAndMeasuring();
   lcd.clear();
   lcd.noDisplay();
   lcd.noBacklight();
+  buttonIsPressed = false;
+  bluetoothState = false;
+  bluetoothSwitch = false;
   analogWrite(LCD_BRIGHTNESS_PIN, 0);
   Serial.end();
   digitalWrite(BLUETOOTH_POWER_PIN, LOW);
@@ -187,9 +231,13 @@ void sleepOut(){
   lcd.backlight();
   analogWrite(LCD_BRIGHTNESS_PIN, 255);
   Serial.begin(9600);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Exiting sleep mode");
+  loadingAndMeasuring();
 }
-
 void sleep(){
+  delay(100);
   sleepModeExit = true;
   for(i=0; i<30; i++){
     LowPower.idle(SLEEP_8S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_OFF, TWI_OFF);
@@ -208,6 +256,7 @@ void checkSleepMode(){
     if (weekday() == 1 || weekday() == 7) {
       sleepMode = true;
       sleepModeEntering = true;
+      Serial.println("Weekend");
     }
     else {
       for (i = 0; i < 8; i++) {
@@ -221,6 +270,7 @@ void checkSleepMode(){
         if (isInside(startExceptionDay, startExceptionMonth, endExceptionDay, endExceptionMonth)){
           sleepMode = true;
           sleepModeEntering = true;
+          Serial.println("Long");
           break;
         }
       }
@@ -236,6 +286,7 @@ void checkSleepMode(){
             if (shDay == false){
                sleepMode = true;
                sleepModeEntering = true;
+               Serial.println("Short");
             } else secondTimetable = true;
           }
         }
@@ -268,18 +319,91 @@ boolean isInside(byte startDay, byte startMonth, byte endDay, byte endMonth) {
 
 void onceInSecond(){
   if(second()!=secondPrev){
-    wakeSeconds--;
-    if(wakeSeconds == 0){
-      wakeLock = false;
-      sleepIntro();
-      return;
+    if(wakeLock){
+      wakeSeconds--;
+      if(wakeSeconds == 0){
+        wakeLock = false;
+        sleepIntro();
+        return;
+      }
     }
+    updateDisplay();
+    checkButton();
+    bluetoothPowerControl();
     secondPrev = second();
   }
-
 }
 
 void setTimetable(boolean isSecond) {
   for (i = 0; i < 16; i++)
     ttable[i] = EEPROM.read(isSecond ? i + 16 : i);
+}
+
+
+// Ensures that given number is inside [min;max] range
+byte validateWithDefault(byte vl, byte mn, byte mx, byte df) {
+  if (vl < mn || vl > mx) return df;
+  return vl;
+}
+
+byte validate(byte vl, byte mn, byte mx) {
+  if (vl < mn) return mn;
+  if (vl > mx) return mx;
+  return vl;
+}
+
+void printProc(byte x) {
+  lcd.print(x);
+  lcd.print("% ");
+}
+
+void print2digits(byte number){
+  if (number < 10) lcd.print('0');
+  lcd.print(number);
+}
+
+void checkButton(){
+  if(!digitalRead(BUTTON_PIN) && !buttonIsPressed){
+    buttonIsPressed = true;
+    pressedTime = 0;
+    wakeSeconds = 30;
+  }
+  if(!digitalRead(BUTTON_PIN) && buttonIsPressed){
+    pressedTime++;
+    if(pressedTime > 5){
+      bluetoothSwitch = true;
+    } 
+  }
+  if(digitalRead(BUTTON_PIN) && buttonIsPressed){
+    buttonIsPressed=false;
+  }
+}
+
+void printBluetoothState(){
+  if(bluetoothState){
+    Serial.println("Print BT char");
+    lcd.setCursor(19, 1);
+    lcd.write(byte(1));
+    lcd.setCursor(16, 1);
+    lcd.print(bluetoothOnTime);
+  }
+}
+
+void bluetoothPowerControl(){
+  if(bluetoothSwitch && !bluetoothState){
+    digitalWrite(BLUETOOTH_POWER_PIN, HIGH);
+    bluetoothOnTime = 30;
+    bluetoothSwitch = false;
+    bluetoothState = true;
+  }
+  else if(bluetoothSwitch && bluetoothState){
+    bluetoothOnTime = 30;
+    bluetoothSwitch = false;
+  }
+  else if(!bluetoothSwitch && bluetoothState){
+    if(bluetoothOnTime == 0){
+      bluetoothState = false;
+      digitalWrite(BLUETOOTH_POWER_PIN, LOW);
+    } else bluetoothOnTime--;
+  }
 }
