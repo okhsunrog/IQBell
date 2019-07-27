@@ -423,7 +423,7 @@ void printBluetoothState(){
 void bluetoothPowerControl(){
   if(bluetoothSwitch && !bluetoothIsOn){
     digitalWrite(BLUETOOTH_POWER_PIN, HIGH);
-    bluetoothOnTime = 30;
+    bluetoothOnTime = 60;
     bluetoothSwitch = false;
     bluetoothIsOn = true;
   }
