@@ -114,7 +114,7 @@ void setup() {
 void introAndBattery(){
   //showing boot animation and checking battery level and state
 	lcd.setCursor(0, 0);
-	lcd.print("IQBell       v 0.4.1");
+	lcd.print("IQBell       v 0.4.2");
 	lcd.setCursor(1, 1);
 	lcd.print("by Danila Gornushko");
 	lcd.setCursor(0, 2);
@@ -346,18 +346,19 @@ boolean isInside(byte startDay, byte startMonth, byte endDay, byte endMonth) {
 	int today = (month() - 1) * 31 + (day() - 1);
 	int startDate = (startMonth - 1) * 31 + (startDay - 1);
 	int endDate = (endMonth - 1) * 31 + (endDay - 1);
-	if (startDate > endDate) {
+	if(startDate == endDate) return (startDate == today);
+	else if (startDate > endDate) {
 		if (today < 186) {
-			if (today < startDate) return true;
+			if (today <= endDate) return true;
 			else return false;
 		}
 		else {
-			if (today > endDate) return true;
+			if (today >= startDate) return true;
 			else return false;
 		}
 	}
 	else {
-		if (today > startDate && today < endDate) return true;
+		if (today >= startDate && today <= endDate) return true;
 		else return false;
 	}
 }
