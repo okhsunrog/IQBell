@@ -9,7 +9,7 @@
 
 #define LCD_COLS 20
 #define LCD_ROWS 4
-#define FACTOR 0.04 //is used for battery level measurement
+#define FACTOR 0.005 //is used for battery level measurement
 #define RELAY_PIN 6
 #define BLUETOOTH_POWER_PIN 5
 #define LCD_BRIGHTNESS_PIN 9
@@ -39,8 +39,8 @@ byte currentBatteryIcon = 255, currentDay = 255, pressedTime, bluetoothOnTime;
 byte secondPrev = 255, i, ttable[16]; //"i" is an iterator in "for"
 
 void loading(byte i);
-void loadingAndMeasuring();
-void introAndBattery();
+void loadingPercent(byte dlay);
+void intro();
 boolean isCharging();
 void chargingMode();
 void printBattery(byte level);
@@ -111,11 +111,11 @@ void setup() {
 		B00010,
 		B0};
 	lcd.createChar(1, bluetoothCharmap);
+	intro();
 	batteryLevel = analogRead(BATTERY_LEVEL_PIN);
-	introAndBattery();
 }
 
-void introAndBattery(){
+void intro(){
   //showing boot animation and checking battery level and state
 	lcd.setCursor(0, 0);
 	lcd.print("IQBell       v 0.5.2");
@@ -123,20 +123,17 @@ void introAndBattery(){
 	lcd.print("by Danila Gornushko");
 	lcd.setCursor(0, 2);
 	lcd.print("Email: dghak@bk.ru");
-	loadingAndMeasuring();
+	loadingPercent(200);
 }
 
-void loadingAndMeasuring(){
+void loadingPercent(byte dlay){
 	lcd.setCursor(3, 3);
 	lcd.print("Loading");
-	for(i =  0; i < 50; i++){
-		checkBattery();
+	for(i =  0; i < 25; i++){
 		lcd.setCursor(11, 3);
-		if(i%2 == 0){
-			loading(i/4);
-			printProc(i*2);
-		}
-		delay(100);
+		loading(i/4);
+		printProc(i*4);
+		delay(dlay);
 	}
 }
 
@@ -156,28 +153,26 @@ boolean isCharging(){ //true if charging or charged
 }
 
 void chargingMode(){
-	lcd.clear();
-	printBluetoothState();
-	printTemperature();
-	lcd.setCursor(0, 0);
-	if(analogRead(STATE_CHARGED_PIN) < 500){
-		lcd.print("Charged!      100% ");
-		printBattery(6);
-		delay(1000);
-	} else{
-		lcd.print("Charging");
+	if(secondPrev != second()){
+		lcd.clear();
+		printBluetoothState();
+		printTemperature();
 		checkBattery();
 		lcd.setCursor(15, 0);
 		printProc(batPercentage - 1);
 		printBattery(batPercentage/15 - 1);
-		for(i=0; i < 3; i++){
+		lcd.setCursor(0, 0);
+		if(analogRead(STATE_CHARGED_PIN) < 500){
+			lcd.print("Charged!      100% ");
+		} else{
+			lcd.print("Charging");
 			lcd.setCursor(8, 0);
-			loading(i);
-			delay(333);
+			loading(second()%3);
 		}
+		secondPrev = second();
+		checkButton();
+		bluetoothPowerControl();
 	}
-	checkButton();
-	bluetoothPowerControl();
 }
 
 void printBattery(byte level) {
@@ -217,7 +212,6 @@ void loop() {
 
 void checkBattery(){
 	int level = analogRead(BATTERY_LEVEL_PIN);
-	if(isCharging()) level -= 10;
 	batteryLevel-=FACTOR*(batteryLevel-level);
 	tempBL = batteryLevel - 252;
 	if(tempBL > 50) correctBatLevel = ((tempBL)*1.92) - 92;
@@ -270,7 +264,7 @@ void sleepIntro(){
 	lcd.setCursor(0, 0);
 	lcd.print("Entering sleep mode");
 	lcd.setCursor(0, 3);
-	loadingAndMeasuring();
+	loadingPercent(50);
 	lcd.clear();
 	lcd.noDisplay();
 	lcd.noBacklight();
@@ -293,7 +287,7 @@ void sleepOut(){
 	lcd.clear();
 	lcd.setCursor(0, 0);
 	lcd.print("Exiting sleep mode");
-	loadingAndMeasuring();
+	loadingPercent(50);
 }
 
 void sleep(){
@@ -611,6 +605,11 @@ void sendingInfo(){
 		toSend.lValue = now();
 		for (i = 0; i < 4; i++) sendByte(toSend.bValue[i]); //sending current time in unix format as 4 bytes
 		sendByte(batPercentage);
+		if(isCharging()){
+			if(analogRead(STATE_CHARGED_PIN) < 500) sendByte(2);
+			else sendByte(1);
+		} 
+		else sendByte(0);
 		sendChecksum();
 	}
 	else Serial.write(35); //Failed
@@ -622,6 +621,7 @@ void sendingExtraInfo(){
 		crc.reset();		
 		sendByte(11);
 		for(i=0; i<80; i++) sendByte(EEPROM.read(i)); //sending timetables' and exceptions' data
+		sendByte(displayBrightness);
 		sendChecksum();
 	}
 	else Serial.write(35); //Failed
