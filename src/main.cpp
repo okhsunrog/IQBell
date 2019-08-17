@@ -19,6 +19,7 @@
 #define STATE_CHARGED_PIN A7
 #define BLUETOOTH_ON_TIME 15
 #define WAKE_LOCK_TIME 30
+#define BUTTON_TIME 3
 
 
 typedef union {
@@ -29,9 +30,9 @@ typedef union {
 ULongByBytes checksum;
 hd44780_I2Cexp lcd;
 CRC32 crc;
-float batteryLevel = 0, correctBatLevel;
+float batteryLevel = 0, correctBatLevel, tempBL;
 boolean sleepMode = false, sleepModeEntering = false, sleepModeExit = false, secondTimetable, wakeLock = true;
-byte batPercentage, wakeSeconds = WAKE_LOCK_TIME;
+byte batPercentage, wakeSeconds = WAKE_LOCK_TIME, displayBrightness;
 boolean buttonIsPressed = false, isAuthorized, activeConnection = false;
 boolean bluetoothSwitch = false, bluetoothIsOn = false;
 byte currentBatteryIcon = 255, currentDay = 255, pressedTime, bluetoothOnTime;
@@ -79,6 +80,7 @@ void sendChecksum();
 void settingTimetable(boolean isSecond);
 void printWakeLockState();
 void timeTick();
+void setDisplayBrightness();
 
 void setup() {
 	// put your setup code here, to run once:
@@ -94,7 +96,8 @@ void setup() {
 	pinMode(BUTTON_PIN, INPUT);
 	digitalWrite(BLUETOOTH_POWER_PIN, LOW);
 	digitalWrite(RELAY_PIN, LOW);
-	analogWrite(LCD_BRIGHTNESS_PIN, 255);
+	displayBrightness = EEPROM.read(88);
+	analogWrite(LCD_BRIGHTNESS_PIN, displayBrightness);
 	Serial.begin(9600); //starting Bluetooth transfer using speed: 9600 bond B/s (the minimal one)
 	lcd.begin(LCD_COLS, LCD_ROWS);
 	lcd.clear();
@@ -115,7 +118,7 @@ void setup() {
 void introAndBattery(){
   //showing boot animation and checking battery level and state
 	lcd.setCursor(0, 0);
-	lcd.print("IQBell       v 0.4.2");
+	lcd.print("IQBell       v 0.5.2");
 	lcd.setCursor(1, 1);
 	lcd.print("by Danila Gornushko");
 	lcd.setCursor(0, 2);
@@ -213,12 +216,16 @@ void loop() {
 }
 
 void checkBattery(){
-	int level = analogRead(BATTERY_LEVEL_PIN) - 252;
+	int level = analogRead(BATTERY_LEVEL_PIN);
 	if(isCharging()) level -= 10;
 	batteryLevel-=FACTOR*(batteryLevel-level);
-	if(batteryLevel > 50) correctBatLevel = batteryLevel*1,92-92;
-	else correctBatLevel = batteryLevel/10;
+	tempBL = batteryLevel - 252;
+	if(tempBL > 50) correctBatLevel = ((tempBL)*1.92) - 92;
+	else correctBatLevel = tempBL/10;
 	batPercentage =  validate(correctBatLevel, 0, 100);
+	if(batPercentage > 20) analogWrite(LCD_BRIGHTNESS_PIN, displayBrightness);
+	else if(batPercentage > 10) analogWrite(LCD_BRIGHTNESS_PIN, displayBrightness/2);
+	else analogWrite(LCD_BRIGHTNESS_PIN, 0);
 }
 
 void updateDisplay(){
@@ -281,7 +288,7 @@ void sleepOut(){
 	setSyncInterval(15);
 	lcd.display();
 	lcd.backlight();
-	analogWrite(LCD_BRIGHTNESS_PIN, 255);
+	analogWrite(LCD_BRIGHTNESS_PIN, displayBrightness);
 	Serial.begin(9600);
 	lcd.clear();
 	lcd.setCursor(0, 0);
@@ -425,7 +432,7 @@ void checkButton(){
 	}
 	if(!digitalRead(BUTTON_PIN) && buttonIsPressed){
 		pressedTime++;
-		if(pressedTime > 2){
+		if(pressedTime >= BUTTON_TIME){
 			bluetoothSwitch = true;
 		}
 	}
@@ -446,6 +453,7 @@ void printBluetoothState(){
 }
 
 void bluetoothPowerControl(){
+	if(batPercentage < 10) bluetoothSwitch = false;
 	if(bluetoothSwitch && !bluetoothIsOn){
 		digitalWrite(BLUETOOTH_POWER_PIN, HIGH);
 		bluetoothOnTime = BLUETOOTH_ON_TIME;
@@ -457,7 +465,7 @@ void bluetoothPowerControl(){
 		bluetoothSwitch = false;
 	}
 	else if(!bluetoothSwitch && bluetoothIsOn){
-		if(bluetoothOnTime == 0){
+		if(bluetoothOnTime == 0 || batPercentage < 10){
 			bluetoothIsOn = false;
 			digitalWrite(BLUETOOTH_POWER_PIN, LOW);
 		} else if(activeConnection){
@@ -574,11 +582,24 @@ void getData(){
 		case 5: sendingExtraInfo();
 			break;
 		case 6: settingTimetable(true);
+			break;
+		case 7: setDisplayBrightness();
+			break;
 	}
 	currentDay = 255;
 	wakeLock = true;
 	wakeSeconds = WAKE_LOCK_TIME + BLUETOOTH_ON_TIME;
 	clearInput();
+}
+
+void setDisplayBrightness(){
+	byte tempBrightness = getByte();
+	if (Checksum()) {
+		Serial.write(11);
+		displayBrightness = tempBrightness;
+		EEPROM.write(88, displayBrightness);
+	}
+	else Serial.write(35);
 }
 
 void sendingInfo(){
@@ -630,9 +651,9 @@ void settingTime(){
 	ULongByBytes val;
 	for (i = 0; i < 4; i++) val.bValue[i] = getByte(); //receiving 4 bytes
 	if (Checksum()) {
+		Serial.write(11);
 		RTC.set(val.lValue);   // set the RTC and the system time to the received value
 		setTime(val.lValue);  // unix-format time is used here as well
-		Serial.write(11);
 	}
 	else Serial.write(35);
 }
