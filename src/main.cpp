@@ -9,7 +9,7 @@
 
 #define LCD_COLS 20
 #define LCD_ROWS 4
-#define FACTOR 0.02 //is used for battery level measurement
+#define FACTOR 0.04 //is used for battery level measurement
 #define RELAY_PIN 6
 #define BLUETOOTH_POWER_PIN 5
 #define LCD_BRIGHTNESS_PIN 9
@@ -29,9 +29,9 @@ typedef union {
 ULongByBytes checksum;
 hd44780_I2Cexp lcd;
 CRC32 crc;
-float batteryLevel = 0;
+float batteryLevel = 0, correctBatLevel;
 boolean sleepMode = false, sleepModeEntering = false, sleepModeExit = false, secondTimetable, wakeLock = true;
-byte batteryPercentage, wakeSeconds = WAKE_LOCK_TIME;
+byte batPercentage, wakeSeconds = WAKE_LOCK_TIME;
 boolean buttonIsPressed = false, isAuthorized, activeConnection = false;
 boolean bluetoothSwitch = false, bluetoothIsOn = false;
 byte currentBatteryIcon = 255, currentDay = 255, pressedTime, bluetoothOnTime;
@@ -78,6 +78,7 @@ void settingTime();
 void sendChecksum();
 void settingTimetable(boolean isSecond);
 void printWakeLockState();
+void timeTick();
 
 void setup() {
 	// put your setup code here, to run once:
@@ -164,8 +165,8 @@ void chargingMode(){
 		lcd.print("Charging");
 		checkBattery();
 		lcd.setCursor(15, 0);
-		printProc(batteryPercentage - 1);
-		printBattery(batteryPercentage/15 - 1);
+		printProc(batPercentage - 1);
+		printBattery(batPercentage/15 - 1);
 		for(i=0; i < 3; i++){
 			lcd.setCursor(8, 0);
 			loading(i);
@@ -212,8 +213,12 @@ void loop() {
 }
 
 void checkBattery(){
-	batteryLevel-=FACTOR*(batteryLevel-analogRead(BATTERY_LEVEL_PIN));
-	batteryPercentage =  validate(batteryLevel - 252, 0, 100);
+	int level = analogRead(BATTERY_LEVEL_PIN) - 252;
+	if(isCharging()) level -= 10;
+	batteryLevel-=FACTOR*(batteryLevel-level);
+	if(batteryLevel > 50) correctBatLevel = batteryLevel*1,92-92;
+	else correctBatLevel = batteryLevel/10;
+	batPercentage =  validate(correctBatLevel, 0, 100);
 }
 
 void updateDisplay(){
@@ -233,8 +238,8 @@ void updateDisplay(){
 	lcd.setCursor(0, 2);
 	printWeekDay();
 	lcd.setCursor(14, 0);
-	printProc(batteryPercentage);
-	printBattery(batteryPercentage/15);
+	printProc(batPercentage);
+	printBattery(batPercentage/15);
 	printBluetoothState();
 	printWakeLockState();
 	printTemperature();
@@ -374,11 +379,16 @@ void onceInSecond(){
 			return;
 			}
 		}
+	timeTick();
 	updateDisplay();
 	checkButton();
 	bluetoothPowerControl();
 	secondPrev = second();
 	}
+}
+
+void timeTick(){
+	
 }
 
 void setTimetable(boolean isSecond) {
@@ -565,6 +575,9 @@ void getData(){
 			break;
 		case 6: settingTimetable(true);
 	}
+	currentDay = 255;
+	wakeLock = true;
+	wakeSeconds = WAKE_LOCK_TIME + BLUETOOTH_ON_TIME;
 	clearInput();
 }
 
@@ -576,7 +589,7 @@ void sendingInfo(){
 		sendByte(11);
 		toSend.lValue = now();
 		for (i = 0; i < 4; i++) sendByte(toSend.bValue[i]); //sending current time in unix format as 4 bytes
-		sendByte(batteryPercentage);
+		sendByte(batPercentage);
 		sendChecksum();
 	}
 	else Serial.write(35); //Failed
@@ -599,9 +612,6 @@ void settingLongExceptions(){
 	if (Checksum()) {
 		Serial.write(11);
 		for (i = 0; i < 32; i++) EEPROM.write(32 + i, tempArr[i]);
-		currentDay = 255;
-		wakeLock = true;
-		wakeSeconds = WAKE_LOCK_TIME + BLUETOOTH_ON_TIME;
 	}
 	else Serial.write(35);
 }
@@ -612,9 +622,6 @@ void settingShortExceptions(){
 	if (Checksum()) {
 		Serial.write(11);
 		for (i = 0; i < 16; i++) EEPROM.write(64 + i, tempArr[i]);
-		currentDay = 255;
-		wakeLock = true;
-		wakeSeconds = WAKE_LOCK_TIME + BLUETOOTH_ON_TIME;
 	}
 	else Serial.write(35);
 }
