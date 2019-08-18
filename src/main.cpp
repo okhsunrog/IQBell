@@ -18,6 +18,7 @@
 #define STATE_CHARGING_PIN A6
 #define STATE_CHARGED_PIN A7
 #define BLUETOOTH_ON_TIME 15
+#define BELL_ON_TIME 7
 #define WAKE_LOCK_TIME 30
 #define BUTTON_TIME 3
 
@@ -31,12 +32,16 @@ ULongByBytes checksum;
 hd44780_I2Cexp lcd;
 CRC32 crc;
 float batteryLevel = 0, correctBatLevel, tempBL;
-boolean sleepMode = false, sleepModeEntering = false, sleepModeExit = false, secondTimetable, wakeLock = true;
+boolean sleepModeEntering = false, sleeping = false, secondTimetable, wakeLock = true;
 byte batPercentage, wakeSeconds = WAKE_LOCK_TIME, displayBrightness;
 boolean buttonIsPressed = false, isAuthorized, activeConnection = false;
 boolean bluetoothSwitch = false, bluetoothIsOn = false;
-byte currentBatteryIcon = 255, currentDay = 255, pressedTime, bluetoothOnTime;
-byte secondPrev = 255, i, ttable[16]; //"i" is an iterator in "for"
+boolean bellSwitch = false, bellIsOn = false;
+byte currentBatteryIcon = 255, currentDay = 255, pressedTime, bluetoothOnTime, sleepMode = 0;
+byte secondPrev = 255, i, ttable[16], prevBellNum = 255, bellOnTime; //"i" is an iterator in "for"
+byte firstBell, lastBell, prevBell, numOfBell;
+int firstBellMinute, lastBellMinute;
+long timeTillBell;
 
 void loading(byte i);
 void loadingPercent(byte dlay);
@@ -61,9 +66,7 @@ void bluetoothPowerControl();
 void printBluetoothState();
 void printProc(byte x);
 void print2digits(byte number);
-byte validateWithDefault(byte vl, byte mn, byte mx, byte df);
 byte validate(byte vl, byte mn, byte mx);
-void setTimetable(boolean isSecond);
 boolean isInside(byte startDay, byte startMonth, byte endDay, byte endMonth);
 byte timeIsSet();
 void waitForInput();
@@ -79,8 +82,10 @@ void settingTime();
 void sendChecksum();
 void settingTimetable(boolean isSecond);
 void printWakeLockState();
-void timeTick();
 void setDisplayBrightness();
+void timeTick();
+void bellPowerControl();
+void printBellTime();
 
 void setup() {
 	// put your setup code here, to run once:
@@ -195,18 +200,22 @@ void loop() {
 		chargingMode();
 	} else{
 		checkSleepMode();
-		if(!sleepMode) wakeLock = false;
-		if(sleepMode && !wakeLock){
+		if(sleepMode == 0) wakeLock = false;
+		if(sleepMode > 0 && !wakeLock){
 			if(sleepModeEntering){
 				sleepIntro();
 				sleepModeEntering = false;
 			}
 			sleep();
 		} else {
+			if(sleeping){
+				sleepOut();
+				sleeping = false;
+			}
 			checkBattery();
-			onceInSecond();
 		}
 	}
+	onceInSecond();
 	if(bluetoothIsOn) checkBluetooth();
 }
 
@@ -244,6 +253,22 @@ void updateDisplay(){
 	printBluetoothState();
 	printWakeLockState();
 	printTemperature();
+	printBellTime();
+	lcd.setCursor(11, 3);
+	lcd.print(sleepMode);	
+}
+
+void printBellTime(){
+	if(sleepMode == 0 && numOfBell != 255){
+		lcd.setCursor(0, 3);
+		lcd.print(numOfBell+1);
+		timeTillBell = (((ttable[numOfBell]/12+8)*3600+(ttable[numOfBell]%12*5)*60) - (hour()*3600 + minute()*60 + second()));
+		if(timeTillBell == 0) bellSwitch = true;
+		lcd.print(" ");
+		print2digits(byte(timeTillBell/60));
+		lcd.print(":");
+		print2digits(byte(timeTillBell%60));
+	}
 }
 
 void printWakeLockState(){
@@ -278,8 +303,6 @@ void sleepIntro(){
 }
 
 void sleepOut(){
-	setSyncProvider(RTC.get);   // we need to sync time after sleep mode
-	setSyncInterval(15);
 	lcd.display();
 	lcd.backlight();
 	analogWrite(LCD_BRIGHTNESS_PIN, displayBrightness);
@@ -287,28 +310,30 @@ void sleepOut(){
 	lcd.clear();
 	lcd.setCursor(0, 0);
 	lcd.print("Exiting sleep mode");
-	loadingPercent(50);
+	loadingPercent(100);
 }
 
 void sleep(){
 	delay(100);
-	sleepModeExit = true;
-	for(i=0; i<30; i++){
+	sleeping = true;
+	secondPrev = 255;
+	for(i=0; i<15; i++){
 		LowPower.idle(SLEEP_8S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_OFF, TWI_OFF);
 		if(digitalRead(BUTTON_PIN) == false) {
 			wakeLock = true;
 			wakeSeconds = WAKE_LOCK_TIME;
-			sleepOut();
 			break;
 		}
 	}
+	setSyncProvider(RTC.get);   // we need to sync time after sleep mode
+	setSyncInterval(15);
 }
 
 void checkSleepMode(){
   	if (currentDay != day()) {
-		sleepMode = false;
+		sleepMode = 0;
 		if (weekday() == 1 || weekday() == 7) {
-			sleepMode = true;
+			sleepMode = 1;
 			sleepModeEntering = true;
 		}
 		else {
@@ -321,7 +346,7 @@ void checkSleepMode(){
 				startExceptionMonth > 12 || endExceptionMonth > 12 || startExceptionDay == 0 ||
 				startExceptionMonth == 0 || endExceptionDay == 0 || endExceptionMonth == 0) continue;
 				if (isInside(startExceptionDay, startExceptionMonth, endExceptionDay, endExceptionMonth)){
-					sleepMode = true;
+					sleepMode = 1;
 					sleepModeEntering = true;
 					break;
 				}
@@ -336,14 +361,23 @@ void checkSleepMode(){
 					exceptionMonth &= B01111111;
 					if (exceptionMonth == month() && exceptionDay == day()) {
 						if (shortDay == false){
-							sleepMode = true;
+							sleepMode = 1;
 							sleepModeEntering = true;
 						} else secondTimetable = true;
 					}
 				}
 			}
 		}
-		setTimetable(secondTimetable);
+		for (i = 0; i < 16; i++) ttable[i] = EEPROM.read(secondTimetable ? i + 16 : i);
+		firstBell = 255;
+		lastBell = 0;
+		for(i = 0; i< 16; i++){
+			if(ttable[i] > 127) continue;
+			if(ttable[i] > lastBell) lastBell = ttable[i];
+			if(ttable[i] < firstBell) firstBell = ttable[i];
+		}
+		firstBellMinute = (firstBell/12+8)*60 + (firstBell%12*5);
+		lastBellMinute = (lastBell/12+8)*60 + (lastBell%12*5);
 		currentDay = day();
 	}
 }
@@ -371,7 +405,15 @@ boolean isInside(byte startDay, byte startMonth, byte endDay, byte endMonth) {
 
 void onceInSecond(){
 	if(second()!=secondPrev){
-		if(wakeLock && sleepMode){
+		timeTick();
+		if(sleepMode == 0 || wakeLock){
+			updateDisplay();
+			checkButton();
+			bluetoothPowerControl();
+			bellPowerControl();
+			secondPrev = second();
+		}
+		if(wakeLock && sleepMode > 0){
 			if(bluetoothIsOn) wakeSeconds = bluetoothOnTime + WAKE_LOCK_TIME;
 			else wakeSeconds--;
 			if(wakeSeconds == 0){
@@ -380,25 +422,41 @@ void onceInSecond(){
 			return;
 			}
 		}
-	timeTick();
-	updateDisplay();
-	checkButton();
-	bluetoothPowerControl();
-	secondPrev = second();
 	}
 }
 
 void timeTick(){
-	
-}
-
-void setTimetable(boolean isSecond) {
-	for (i = 0; i < 16; i++) ttable[i] = EEPROM.read(isSecond ? i + 16 : i);
-}
-
-byte validateWithDefault(byte vl, byte mn, byte mx, byte df) {
-	if (vl < mn || vl > mx) return df;
-	return vl;
+	if(sleepMode != 1){
+		if((firstBellMinute - 20) >= (hour()*60+minute())){
+			sleepModeEntering = true;
+			if(sleepMode != 2){
+				wakeLock = true;
+				wakeSeconds = bluetoothIsOn ? WAKE_LOCK_TIME + BLUETOOTH_ON_TIME : WAKE_LOCK_TIME;
+			} 
+			sleepMode = 2;
+		}	 
+		else if((lastBellMinute + 10) <= (hour()*60+minute())){
+			sleepModeEntering = true;
+			if(sleepMode != 3){
+				wakeLock = true;
+				wakeSeconds = bluetoothIsOn ? WAKE_LOCK_TIME + BLUETOOTH_ON_TIME : WAKE_LOCK_TIME;
+			} 
+			sleepMode = 3;
+		} else sleepMode = 0;
+	}
+	if(sleepMode == 0){
+		prevBell = 255;
+		numOfBell = 255;
+		for(i=0; i<16; i++){
+			if(ttable[i] > 127) continue;
+			if(ttable[i] < prevBell){
+				if((((ttable[i]/12+8)*3600+(ttable[i]%12*5)*60) - (hour()*3600 + minute()*60 + second())) >= 0){
+					prevBell = ttable[i];
+					numOfBell = i;
+				}
+			}
+		}
+	}
 }
 
 byte validate(byte vl, byte mn, byte mx) {
@@ -466,6 +524,21 @@ void bluetoothPowerControl(){
 			activeConnection = false;
 			bluetoothOnTime = BLUETOOTH_ON_TIME;
 		} else bluetoothOnTime--;
+	}
+}
+
+void bellPowerControl(){
+	if(bellSwitch){
+		digitalWrite(RELAY_PIN, HIGH);
+		bellOnTime = BELL_ON_TIME;
+		bellSwitch = false;
+		bellIsOn = true;
+	}
+	if(bellIsOn){
+		if(bellOnTime == 0){
+			bellIsOn = false;
+			digitalWrite(RELAY_PIN, LOW);
+		} else bellOnTime--;
 	}
 }
 
