@@ -194,13 +194,18 @@ void loop() {
 }
 
 void checkBattery(){
-	int level = analogRead(BATTERY_LEVEL_PIN);
-	if(mode > 3) level -= 10;
-	batteryLevel-=FACTOR*(batteryLevel-level);
-	tempBL = batteryLevel - 252;
-	if(tempBL > 50) correctBatLevel = ((tempBL)*1.92) - 92;
-	else correctBatLevel = tempBL/10;
-	batPercentage =  validate(correctBatLevel, 0, 100);
+	if(mode == 5){
+		batPercentage = 100;
+	}else{
+		int level = analogRead(BATTERY_LEVEL_PIN);
+		if(mode == 4) level -= 15;
+		batteryLevel-=FACTOR*(batteryLevel-level);
+		tempBL = batteryLevel - 252;
+		if(tempBL > 50) correctBatLevel = ((tempBL)*1.92) - 92;
+		else correctBatLevel = tempBL/10;
+		batPercentage =  validate(correctBatLevel, 0, 100);
+		if(mode == 4) batPercentage--;
+	}
 	if(batPercentage > 20) analogWrite(LCD_BRIGHTNESS_PIN, displayBrightness);
 	else if(batPercentage > 10) analogWrite(LCD_BRIGHTNESS_PIN, displayBrightness/2);
 	else analogWrite(LCD_BRIGHTNESS_PIN, 0);
