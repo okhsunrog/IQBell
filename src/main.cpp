@@ -22,7 +22,6 @@
 #define WAKE_LOCK_TIME 30
 #define BUTTON_TIME 3
 
-
 typedef union {
 	uint32_t lValue;
 	uint8_t bValue[sizeof(lValue)];
@@ -32,29 +31,29 @@ ULongByBytes checksum;
 hd44780_I2Cexp lcd;
 CRC32 crc;
 float batteryLevel = 0, correctBatLevel, tempBL;
-boolean sleepModeEntering = false, sleeping = false, secondTimetable, wakeLock = true;
+boolean sleeping = false, secondTimetable, wakeLock = true;
 byte batPercentage, wakeSeconds = WAKE_LOCK_TIME, displayBrightness;
 boolean buttonIsPressed = false, isAuthorized, activeConnection = false;
-boolean bluetoothSwitch = false, bluetoothIsOn = false;
-boolean bellSwitch = false, bellIsOn = false;
-byte currentBatteryIcon = 255, currentDay = 255, pressedTime, bluetoothOnTime, sleepMode = 0;
-byte secondPrev = 255, i, ttable[16], prevBellNum = 255, bellOnTime; //"i" is an iterator in "for"
-byte firstBell, lastBell, prevBell, numOfBell;
+boolean bluetoothSwitch = false, bluetoothIsOn = false, isHoliday = false;
+boolean bellIsOn = false;
+byte currentBatteryIcon = 255, currentDay = 255, pressedTime, bluetoothOnTime, mode = 0, prevMode = 0;
+byte secondPrev = 255, i, ttable[16], prevBellNum = 255, relayOnTime = 0; //"i" is an iterator in "for"
+byte firstBell, lastBell, prevBell, numOfBell, ringingState = 0, temperature = 0;
 int firstBellMinute, lastBellMinute;
 long timeTillBell;
+boolean workshop[15] = {false, true, true, true,  true, false, true,  true, true, true, false, true, true, true, true};
+boolean assembly[12] = {false, true, true, false, true, true, false, true, true,  false, true, true};
 
 void loading(byte i);
 void loadingPercent(byte dlay);
 void intro();
-boolean isCharging();
-void chargingMode();
 void printBattery(byte level);
 void checkBattery();
 void checkBluetooth();
 void printWeekDay();
 void updateDisplay();
 void printTemperature();
-void checkSleepMode();
+void checkMode();
 void clearInput();
 void getData();
 void sleep();
@@ -84,8 +83,13 @@ void settingTimetable(boolean isSecond);
 void printWakeLockState();
 void setDisplayBrightness();
 void timeTick();
-void bellPowerControl();
+void bellControl();
 void printBellTime();
+void manualBell(byte type);
+void printTimeAndDate();
+void printMode();
+void printTimetable();
+void printRelayState();
 
 void setup() {
 	// put your setup code here, to run once:
@@ -116,14 +120,23 @@ void setup() {
 		B00010,
 		B0};
 	lcd.createChar(1, bluetoothCharmap);
+	byte bellCharmap[8] = {
+		B0,
+		B00100,
+		B01010,
+		B01010,
+		B01010,
+		B11111,
+		B00100,
+		B0};
+	lcd.createChar(2, bellCharmap);
 	intro();
 	batteryLevel = analogRead(BATTERY_LEVEL_PIN);
 }
 
-void intro(){
-  //showing boot animation and checking battery level and state
+void intro(){ //showing boot animation
 	lcd.setCursor(0, 0);
-	lcd.print("IQBell       v 0.5.2");
+	lcd.print("IQBell  Smart School");
 	lcd.setCursor(1, 1);
 	lcd.print("by Danila Gornushko");
 	lcd.setCursor(0, 2);
@@ -153,33 +166,6 @@ void loading(byte i){
 	}
 }
 
-boolean isCharging(){ //true if charging or charged
-	return !((analogRead(STATE_CHARGING_PIN) < 50) && (analogRead(STATE_CHARGED_PIN) < 50));
-}
-
-void chargingMode(){
-	if(secondPrev != second()){
-		lcd.clear();
-		printBluetoothState();
-		printTemperature();
-		checkBattery();
-		lcd.setCursor(15, 0);
-		printProc(batPercentage - 1);
-		printBattery(batPercentage/15 - 1);
-		lcd.setCursor(0, 0);
-		if(analogRead(STATE_CHARGED_PIN) < 500){
-			lcd.print("Charged!      100% ");
-		} else{
-			lcd.print("Charging");
-			lcd.setCursor(8, 0);
-			loading(second()%3);
-		}
-		secondPrev = second();
-		checkButton();
-		bluetoothPowerControl();
-	}
-}
-
 void printBattery(byte level) {
 	if (level != currentBatteryIcon) { //if battery icon changed then redraw the icon
 		byte charmap[8];
@@ -196,31 +182,20 @@ void printBattery(byte level) {
 
 void loop() {
 	// put your main code here, to run repeatedly:
-	if(isCharging()){
-		chargingMode();
-	} else{
-		checkSleepMode();
-		if(sleepMode == 0) wakeLock = false;
-		if(sleepMode > 0 && !wakeLock){
-			if(sleepModeEntering){
-				sleepIntro();
-				sleepModeEntering = false;
-			}
+	checkBattery();
+	checkMode();
+	if(mode == 0) wakeLock = false;
+		if(mode > 0 && !wakeLock){
+			if(!sleeping) sleepIntro();
 			sleep();
-		} else {
-			if(sleeping){
-				sleepOut();
-				sleeping = false;
-			}
-			checkBattery();
-		}
-	}
+		} else if(sleeping) sleepOut();
 	onceInSecond();
 	if(bluetoothIsOn) checkBluetooth();
 }
 
 void checkBattery(){
 	int level = analogRead(BATTERY_LEVEL_PIN);
+	if(mode > 3) level -= 10;
 	batteryLevel-=FACTOR*(batteryLevel-level);
 	tempBL = batteryLevel - 252;
 	if(tempBL > 50) correctBatLevel = ((tempBL)*1.92) - 92;
@@ -233,6 +208,67 @@ void checkBattery(){
 
 void updateDisplay(){
 	lcd.clear();
+	printTimeAndDate();
+	printWeekDay();
+	lcd.setCursor(15, 0);
+	printProc(batPercentage);
+	printBattery(batPercentage/15);
+	printBluetoothState();
+	printRelayState();
+	printWakeLockState();
+	printTemperature();
+	printBellTime();
+	printMode();
+}
+
+void printMode(){
+	lcd.setCursor(0, 3);
+	switch (mode){
+	case 0:
+		lcd.print("Classes ");
+		printTimetable();		
+		break;
+	case 1:
+		lcd.print("Holiday");
+		break;
+	case 2:
+		lcd.print("Not started ");
+		printTimetable();		
+		break;
+	case 3:
+		lcd.print("Finished ");
+		printTimetable();
+		break;
+	case 4:
+		lcd.print("Charging");
+		break;
+	default:
+		lcd.print("Charged");
+		break;
+	}
+}
+
+void printTimetable(){
+	if(secondTimetable) lcd.print("Short");
+	else lcd.print("Main");
+}
+
+void printBellTime(){
+	if(mode == 0 && numOfBell != 255){
+		lcd.setCursor(11, 1);
+		print2digits(byte(timeTillBell/60));
+		lcd.print(":");
+		print2digits(byte(timeTillBell%60));
+		lcd.setCursor(11, 2);
+		print2digits(ttable[numOfBell]/12+8);
+		lcd.print(":");
+		print2digits(ttable[numOfBell]%12*5);
+		lcd.setCursor(14, 3);
+		print2digits(numOfBell+1);
+	}
+}
+
+void printTimeAndDate(){
 	lcd.setCursor(0, 0);
 	print2digits(hour());
 	lcd.write(':');
@@ -240,47 +276,51 @@ void updateDisplay(){
 	lcd.write(':');
 	print2digits(second());
 	lcd.setCursor(0, 1);
-	lcd.print(day());
+	print2digits(day());
 	lcd.write('/');
-	lcd.print(month());
+	print2digits(month());
 	lcd.write('/');
 	lcd.print(year());
-	lcd.setCursor(0, 2);
-	printWeekDay();
-	lcd.setCursor(14, 0);
-	printProc(batPercentage);
-	printBattery(batPercentage/15);
-	printBluetoothState();
-	printWakeLockState();
-	printTemperature();
-	printBellTime();
-	lcd.setCursor(11, 3);
-	lcd.print(sleepMode);	
 }
 
-void printBellTime(){
-	if(sleepMode == 0 && numOfBell != 255){
-		lcd.setCursor(0, 3);
-		lcd.print(numOfBell+1);
-		timeTillBell = (((ttable[numOfBell]/12+8)*3600+(ttable[numOfBell]%12*5)*60) - (hour()*3600 + minute()*60 + second()));
-		if(timeTillBell == 0) bellSwitch = true;
-		lcd.print(" ");
-		print2digits(byte(timeTillBell/60));
-		lcd.print(":");
-		print2digits(byte(timeTillBell%60));
+void printTemperature(){
+	lcd.setCursor(9, 0);
+	temperature = RTC.temperature() / 4;
+	lcd.print(temperature);
+	lcd.write(byte(0xDF));
+	lcd.print("C");
+}
+
+void printRelayState(){
+	if(ringingState > 0){
+		lcd.setCursor(19, 1);
+		lcd.write(byte(2));
+		if(relayOnTime != 0){
+			lcd.setCursor(17, 1);
+			print2digits(relayOnTime);
+		}
 	}
 }
 
 void printWakeLockState(){
 	if(wakeLock){
+		lcd.setCursor(19, 2);
+		lcd.print("W");
 		if(wakeSeconds < WAKE_LOCK_TIME + BLUETOOTH_ON_TIME - 2){
-			lcd.setCursor(16, 2);
-			lcd.print("W ");
-			lcd.print(wakeSeconds);
-		} else{
-			lcd.setCursor(19, 2);
-			lcd.print("W");
+			lcd.setCursor(17, 2);
+ 			print2digits(wakeSeconds);
 		}
+	}
+}
+
+void printBluetoothState(){
+	if(bluetoothIsOn){
+		lcd.setCursor(19, 3);
+		lcd.write(byte(1));
+		if(bluetoothOnTime < BLUETOOTH_ON_TIME - 2){
+			lcd.setCursor(17, 3);
+			print2digits(bluetoothOnTime);
+		} 
 	}
 }
 
@@ -303,6 +343,7 @@ void sleepIntro(){
 }
 
 void sleepOut(){
+	sleeping = false;
 	lcd.display();
 	lcd.backlight();
 	analogWrite(LCD_BRIGHTNESS_PIN, displayBrightness);
@@ -319,7 +360,7 @@ void sleep(){
 	secondPrev = 255;
 	for(i=0; i<15; i++){
 		LowPower.idle(SLEEP_8S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_OFF, TWI_OFF);
-		if(digitalRead(BUTTON_PIN) == false) {
+		if(digitalRead(BUTTON_PIN) == false){
 			wakeLock = true;
 			wakeSeconds = WAKE_LOCK_TIME;
 			break;
@@ -329,13 +370,11 @@ void sleep(){
 	setSyncInterval(15);
 }
 
-void checkSleepMode(){
+void checkMode(){
+	mode = 0; //average mode
   	if (currentDay != day()) {
-		sleepMode = 0;
-		if (weekday() == 1 || weekday() == 7) {
-			sleepMode = 1;
-			sleepModeEntering = true;
-		}
+		isHoliday = false;
+		if (weekday() == 1 || weekday() == 7) isHoliday = true;
 		else {
 			for (i = 0; i < 8; i++) {
 				byte startExceptionMonth = EEPROM.read(32 + i * 4);
@@ -346,13 +385,12 @@ void checkSleepMode(){
 				startExceptionMonth > 12 || endExceptionMonth > 12 || startExceptionDay == 0 ||
 				startExceptionMonth == 0 || endExceptionDay == 0 || endExceptionMonth == 0) continue;
 				if (isInside(startExceptionDay, startExceptionMonth, endExceptionDay, endExceptionMonth)){
-					sleepMode = 1;
-					sleepModeEntering = true;
+					isHoliday = true;
 					break;
 				}
 			}
 			secondTimetable = false;
-			if(!sleepMode){
+			if(!isHoliday){
 				for (i = 0; i < 8; i++) {
 					byte exceptionMonth = EEPROM.read(64 + i * 2);
 					byte exceptionDay = EEPROM.read(65 + i * 2);
@@ -360,10 +398,8 @@ void checkSleepMode(){
 					shortDay = (exceptionMonth > 127);
 					exceptionMonth &= B01111111;
 					if (exceptionMonth == month() && exceptionDay == day()) {
-						if (shortDay == false){
-							sleepMode = 1;
-							sleepModeEntering = true;
-						} else secondTimetable = true;
+						if (shortDay == false) isHoliday = true;
+						else secondTimetable = true;
 					}
 				}
 			}
@@ -380,6 +416,20 @@ void checkSleepMode(){
 		lastBellMinute = (lastBell/12+8)*60 + (lastBell%12*5);
 		currentDay = day();
 	}
+	if(!((analogRead(STATE_CHARGING_PIN) < 50) && (analogRead(STATE_CHARGED_PIN) < 50))){
+		if(analogRead(STATE_CHARGING_PIN) > 950) mode = 5;
+		else mode = 4;
+	}
+	if(mode == 0){
+		if(isHoliday) mode = 1; //holiday mode
+		else if((firstBellMinute - 20) >= (hour()*60+minute())) mode = 2; //classes have not started
+		else if((lastBellMinute + 10) <= (hour()*60+minute())) mode = 3; //classes have finished
+	}
+	if(mode != prevMode){
+		wakeLock = true;
+		wakeSeconds = WAKE_LOCK_TIME;
+	}
+	prevMode = mode;
 }
 
 boolean isInside(byte startDay, byte startMonth, byte endDay, byte endMonth) {
@@ -405,58 +455,39 @@ boolean isInside(byte startDay, byte startMonth, byte endDay, byte endMonth) {
 
 void onceInSecond(){
 	if(second()!=secondPrev){
-		timeTick();
-		if(sleepMode == 0 || wakeLock){
+		if(mode == 0) timeTick();
+		if(mode == 0 || wakeLock){
 			updateDisplay();
 			checkButton();
 			bluetoothPowerControl();
-			bellPowerControl();
+			if(mode == 0) bellControl();
+			else ringingState = 0;
 			secondPrev = second();
 		}
-		if(wakeLock && sleepMode > 0){
+		if(wakeLock){
 			if(bluetoothIsOn) wakeSeconds = bluetoothOnTime + WAKE_LOCK_TIME;
 			else wakeSeconds--;
 			if(wakeSeconds == 0){
 			wakeLock = false;
-			sleepIntro();
-			return;
 			}
 		}
 	}
 }
 
 void timeTick(){
-	if(sleepMode != 1){
-		if((firstBellMinute - 20) >= (hour()*60+minute())){
-			sleepModeEntering = true;
-			if(sleepMode != 2){
-				wakeLock = true;
-				wakeSeconds = bluetoothIsOn ? WAKE_LOCK_TIME + BLUETOOTH_ON_TIME : WAKE_LOCK_TIME;
-			} 
-			sleepMode = 2;
-		}	 
-		else if((lastBellMinute + 10) <= (hour()*60+minute())){
-			sleepModeEntering = true;
-			if(sleepMode != 3){
-				wakeLock = true;
-				wakeSeconds = bluetoothIsOn ? WAKE_LOCK_TIME + BLUETOOTH_ON_TIME : WAKE_LOCK_TIME;
-			} 
-			sleepMode = 3;
-		} else sleepMode = 0;
-	}
-	if(sleepMode == 0){
-		prevBell = 255;
-		numOfBell = 255;
-		for(i=0; i<16; i++){
-			if(ttable[i] > 127) continue;
-			if(ttable[i] < prevBell){
-				if((((ttable[i]/12+8)*3600+(ttable[i]%12*5)*60) - (hour()*3600 + minute()*60 + second())) >= 0){
-					prevBell = ttable[i];
-					numOfBell = i;
-				}
+	prevBell = 255;
+	numOfBell = 255;
+	for(i=0; i<16; i++){
+		if(ttable[i] > 127) continue;
+		if(ttable[i] < prevBell){
+			if((((ttable[i]/12+8)*3600+(ttable[i]%12*5)*60) - (hour()*3600 + minute()*60 + second())) >= 0){
+				prevBell = ttable[i];
+				numOfBell = i;
 			}
 		}
 	}
+	timeTillBell = (((ttable[numOfBell]/12+8)*3600+(ttable[numOfBell]%12*5)*60) - (hour()*3600 + minute()*60 + second()));
+	if(timeTillBell == 0) ringingState = 1;
 }
 
 byte validate(byte vl, byte mn, byte mx) {
@@ -493,17 +524,6 @@ void checkButton(){
 	}
 }
 
-void printBluetoothState(){
-	if(bluetoothIsOn){
-		lcd.setCursor(19, 1);
-		lcd.write(byte(1));
-		if(bluetoothOnTime < BLUETOOTH_ON_TIME - 2){
-			lcd.setCursor(16, 1);
-			lcd.print(bluetoothOnTime);
-		}
-	}
-}
-
 void bluetoothPowerControl(){
 	if(batPercentage < 10) bluetoothSwitch = false;
 	if(bluetoothSwitch && !bluetoothIsOn){
@@ -527,29 +547,54 @@ void bluetoothPowerControl(){
 	}
 }
 
-void bellPowerControl(){
-	if(bellSwitch){
-		digitalWrite(RELAY_PIN, HIGH);
-		bellOnTime = BELL_ON_TIME;
-		bellSwitch = false;
-		bellIsOn = true;
+void bellControl(){
+	switch (ringingState){
+	case 1:
+		if(!bellIsOn){
+			digitalWrite(RELAY_PIN, HIGH);
+			relayOnTime = BELL_ON_TIME;
+			bellIsOn = true;
+		} else{
+			if(relayOnTime == 0){
+				bellIsOn = false;
+				ringingState = 0;
+				digitalWrite(RELAY_PIN, LOW);
+			} else relayOnTime--;
+		}
+		break;
+	case 2:
+		if(!bellIsOn){
+			bellIsOn = true;
+			relayOnTime = 15;
+		}
+		if(bellIsOn){
+			relayOnTime--;
+			digitalWrite(RELAY_PIN, workshop[relayOnTime]);
+			if(relayOnTime == 0){
+				bellIsOn = false;
+				ringingState = 0;
+			}
+		}
+		break;
+	case 3:
+		if(!bellIsOn){
+			bellIsOn = true;
+			relayOnTime = 12;
+		}
+		if(bellIsOn){
+			relayOnTime--;
+			digitalWrite(RELAY_PIN, assembly[relayOnTime]);
+			if(relayOnTime == 0){
+				bellIsOn = false;
+				ringingState = 0;
+			}
+		}
+		break;
 	}
-	if(bellIsOn){
-		if(bellOnTime == 0){
-			bellIsOn = false;
-			digitalWrite(RELAY_PIN, LOW);
-		} else bellOnTime--;
-	}
-}
-
-void printTemperature(){
-	lcd.setCursor(16, 3);
-	lcd.print(RTC.temperature() / 4);
-	lcd.write(byte(0xDF));
-	lcd.print("C");
 }
 
 void printWeekDay(){
+	lcd.setCursor(0, 2);
 	switch (weekday())
 	{
 	case 1: lcd.print("Sunday");
@@ -582,13 +627,8 @@ void checkBluetooth(){
 				delay(100);
 				if (Serial.available() > 0)  getData();
 			}
-		} else{
-			if(Serial.read()==1){ //if ping
-			Serial.write(5);
-			activeConnection = true;
-			}
-			clearInput();
 		}
+		clearInput();
 	}
 }
 
@@ -652,11 +692,23 @@ void getData(){
 			break;
 		case 7: setDisplayBrightness();
 			break;
+		case 8: manualBell(1);
+			break;
+		case 9: manualBell(2);
+			break;
+		case 10: manualBell(3);
+			break;
 	}
 	currentDay = 255;
-	wakeLock = true;
-	wakeSeconds = WAKE_LOCK_TIME + BLUETOOTH_ON_TIME;
 	clearInput();
+}
+
+void manualBell(byte type){
+	if(Checksum()){
+		Serial.write(11);
+		if(ringingState == 0 && mode == 0) ringingState = type;
+	}
+	else Serial.write(35);
 }
 
 void setDisplayBrightness(){
@@ -678,11 +730,13 @@ void sendingInfo(){
 		toSend.lValue = now();
 		for (i = 0; i < 4; i++) sendByte(toSend.bValue[i]); //sending current time in unix format as 4 bytes
 		sendByte(batPercentage);
-		if(isCharging()){
-			if(analogRead(STATE_CHARGED_PIN) < 500) sendByte(2);
-			else sendByte(1);
-		} 
-		else sendByte(0);
+		byte modeToSend = mode;
+		if(secondTimetable) modeToSend += 128;
+		sendByte(modeToSend);
+		sendByte(temperature);
+		sendByte(ringingState);
+		sendByte(relayOnTime);
+		sendByte(numOfBell);
 		sendChecksum();
 	}
 	else Serial.write(35); //Failed
