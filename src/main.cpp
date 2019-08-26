@@ -187,7 +187,7 @@ void loop() {
 	if(!bluetoothIsOn && !bellIsOn){
 		if(newMeasuringFlag){
 			lcd.clear();
-			lcd.setCursor(0, 0);
+			lcd.setCursor(4, 0);
 			lcd.print("Measuring");
 			loadingAndMeasuring();
 			newMeasuringFlag = false;
@@ -433,7 +433,7 @@ void checkMode(){
 	else if(analogRead(STATE_CHARGING_PIN) > 1000) mode = 5;
 	if(mode == 0){
 		if(isHoliday) mode = 1; //holiday mode
-		else if((firstBellMinute - 20) >= (hour()*60+minute())) mode = 2; //classes have not started
+		else if((firstBellMinute - 10) >= (hour()*60+minute())) mode = 2; //classes have not started
 		else if((lastBellMinute + 10) <= (hour()*60+minute())) mode = 3; //classes have finished
 	}
 	if(mode != prevMode){
