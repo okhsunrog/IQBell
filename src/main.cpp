@@ -9,7 +9,7 @@
 
 #define LCD_COLS 20
 #define LCD_ROWS 4
-#define FACTOR 0.005 //is used for battery level measurement
+#define FACTOR 0.0001 //is used for battery level measurement
 #define RELAY_PIN 6
 #define BLUETOOTH_POWER_PIN 5
 #define LCD_BRIGHTNESS_PIN 9
@@ -31,21 +31,21 @@ ULongByBytes checksum;
 hd44780_I2Cexp lcd;
 CRC32 crc;
 float batteryLevel = 0, correctBatLevel, tempBL;
-boolean sleeping = false, secondTimetable, wakeLock = true;
+boolean sleeping = false, secondTimetable, wakeLock = true, newMeasuringFlag = false;
 byte batPercentage, wakeSeconds = WAKE_LOCK_TIME, displayBrightness;
 boolean buttonIsPressed = false, isAuthorized, activeConnection = false;
 boolean bluetoothSwitch = false, bluetoothIsOn = false, isHoliday = false;
-boolean bellIsOn = false;
+boolean bellIsOn = false, measuring = false;
 byte currentBatteryIcon = 255, currentDay = 255, pressedTime, bluetoothOnTime, mode = 0, prevMode = 0;
 byte secondPrev = 255, i, ttable[16], prevBellNum = 255, relayOnTime = 0; //"i" is an iterator in "for"
 byte firstBell, lastBell, prevBell, numOfBell, ringingState = 0, temperature = 0;
-int firstBellMinute, lastBellMinute;
+int firstBellMinute, lastBellMinute, ii;
 long timeTillBell;
 boolean workshop[15] = {false, true, true, true,  true, false, true,  true, true, true, false, true, true, true, true};
 boolean assembly[12] = {false, true, true, false, true, true, false, true, true,  false, true, true};
 
 void loading(byte i);
-void loadingPercent(byte dlay);
+void loadingAndMeasuring();
 void intro();
 void printBattery(byte level);
 void checkBattery();
@@ -130,8 +130,8 @@ void setup() {
 		B00100,
 		B0};
 	lcd.createChar(2, bellCharmap);
-	intro();
 	batteryLevel = analogRead(BATTERY_LEVEL_PIN);
+	intro();
 }
 
 void intro(){ //showing boot animation
@@ -141,18 +141,20 @@ void intro(){ //showing boot animation
 	lcd.print("by Danila Gornushko");
 	lcd.setCursor(0, 2);
 	lcd.print("Email: dghak@bk.ru");
-	loadingPercent(200);
+	loadingAndMeasuring();
 }
 
-void loadingPercent(byte dlay){
+void loadingAndMeasuring(){
 	lcd.setCursor(3, 3);
 	lcd.print("Loading");
-	for(i =  0; i < 25; i++){
+	measuring = true;
+	for(i = 0; i < 25; i++){
 		lcd.setCursor(11, 3);
 		loading(i/4);
 		printProc(i*4);
-		delay(dlay);
+		for(ii = 0; ii < 1200; ii++) checkBattery();
 	}
+	measuring = false;
 }
 
 void loading(byte i){
@@ -182,7 +184,15 @@ void printBattery(byte level) {
 
 void loop() {
 	// put your main code here, to run repeatedly:
-	checkBattery();
+	if(!bluetoothIsOn && !bellIsOn){
+		if(newMeasuringFlag){
+			lcd.clear();
+			lcd.setCursor(0, 0);
+			lcd.print("Measuring");
+			loadingAndMeasuring();
+			newMeasuringFlag = false;
+		}else checkBattery();
+	}
 	checkMode();
 	if(mode == 0) wakeLock = false;
 		if(mode > 0 && !wakeLock){
@@ -191,24 +201,27 @@ void loop() {
 		} else if(sleeping) sleepOut();
 	onceInSecond();
 	if(bluetoothIsOn) checkBluetooth();
+	if(batPercentage > 20) analogWrite(LCD_BRIGHTNESS_PIN, displayBrightness);
+	else if(batPercentage > 10) analogWrite(LCD_BRIGHTNESS_PIN, displayBrightness/2);
+	else analogWrite(LCD_BRIGHTNESS_PIN, 7);
 }
 
 void checkBattery(){
-	if(mode == 5){
-		batPercentage = 100;
-	}else{
+	if(mode == 5) batPercentage = 100;
+	else{
 		int level = analogRead(BATTERY_LEVEL_PIN);
 		if(mode == 4) level -= 15;
 		batteryLevel-=FACTOR*(batteryLevel-level);
 		tempBL = batteryLevel - 252;
 		if(tempBL > 50) correctBatLevel = ((tempBL)*1.92) - 92;
 		else correctBatLevel = tempBL/10;
-		batPercentage =  validate(correctBatLevel, 0, 100);
-		if(mode == 4) batPercentage--;
+		if(mode == 4) batPercentage = validate(correctBatLevel, 0, 99);
+		else{
+			byte tempLevel = validate(correctBatLevel, 0, 100);
+			if(measuring) batPercentage = tempLevel;
+			else if(tempLevel < batPercentage) batPercentage = tempLevel;
+		}
 	}
-	if(batPercentage > 20) analogWrite(LCD_BRIGHTNESS_PIN, displayBrightness);
-	else if(batPercentage > 10) analogWrite(LCD_BRIGHTNESS_PIN, displayBrightness/2);
-	else analogWrite(LCD_BRIGHTNESS_PIN, 0);
 }
 
 void updateDisplay(){
@@ -331,11 +344,6 @@ void printBluetoothState(){
 
 void sleepIntro(){
 	lcd.clear();
-	lcd.setCursor(0, 0);
-	lcd.print("Entering sleep mode");
-	lcd.setCursor(0, 3);
-	loadingPercent(50);
-	lcd.clear();
 	lcd.noDisplay();
 	lcd.noBacklight();
 	buttonIsPressed = false;
@@ -356,7 +364,7 @@ void sleepOut(){
 	lcd.clear();
 	lcd.setCursor(0, 0);
 	lcd.print("Exiting sleep mode");
-	loadingPercent(100);
+	loadingAndMeasuring();
 }
 
 void sleep(){
@@ -421,10 +429,8 @@ void checkMode(){
 		lastBellMinute = (lastBell/12+8)*60 + (lastBell%12*5);
 		currentDay = day();
 	}
-	if(!((analogRead(STATE_CHARGING_PIN) < 50) && (analogRead(STATE_CHARGED_PIN) < 50))){
-		if(analogRead(STATE_CHARGING_PIN) > 950) mode = 5;
-		else mode = 4;
-	}
+	if(analogRead(STATE_CHARGED_PIN) > 1000) mode = 4;
+	else if(analogRead(STATE_CHARGING_PIN) > 1000) mode = 5;
 	if(mode == 0){
 		if(isHoliday) mode = 1; //holiday mode
 		else if((firstBellMinute - 20) >= (hour()*60+minute())) mode = 2; //classes have not started
@@ -470,11 +476,10 @@ void onceInSecond(){
 			secondPrev = second();
 		}
 		if(wakeLock){
-			if(bluetoothIsOn) wakeSeconds = bluetoothOnTime + WAKE_LOCK_TIME;
-			else wakeSeconds--;
 			if(wakeSeconds == 0){
 			wakeLock = false;
-			}
+			} else if(bluetoothIsOn) wakeSeconds = bluetoothOnTime + WAKE_LOCK_TIME;
+			else wakeSeconds--;
 		}
 	}
 }
@@ -722,6 +727,7 @@ void setDisplayBrightness(){
 		Serial.write(11);
 		displayBrightness = tempBrightness;
 		EEPROM.write(88, displayBrightness);
+		newMeasuringFlag = true;
 	}
 	else Serial.write(35);
 }
@@ -734,7 +740,6 @@ void sendingInfo(){
 		sendByte(11);
 		toSend.lValue = now();
 		for (i = 0; i < 4; i++) sendByte(toSend.bValue[i]); //sending current time in unix format as 4 bytes
-		sendByte(batPercentage);
 		byte modeToSend = mode;
 		if(secondTimetable) modeToSend += 128;
 		sendByte(modeToSend);
@@ -754,6 +759,7 @@ void sendingExtraInfo(){
 		sendByte(11);
 		for(i=0; i<80; i++) sendByte(EEPROM.read(i)); //sending timetables' and exceptions' data
 		sendByte(displayBrightness);
+		sendByte(batPercentage);
 		sendChecksum();
 	}
 	else Serial.write(35); //Failed
